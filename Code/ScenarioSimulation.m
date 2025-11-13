@@ -59,7 +59,12 @@ basePower = db2pow(params.transmitPower_dBm.base - 30);
 
 %% Evaluate SNR for each legitimate user ----------------------------------
 numUsers = numel(scenario.legitimateUsers);
+numEaves = numel(scenario.eavesdroppers);
+
 userSummaries = repmat(struct('name',"",'bestRelay',"",'mainSNR',0,'eavesSNR',0,'secrecyRate',0), numUsers, 1);
+
+perHopResults = struct('user', {}, 'relay', {}, 'firstHopSNR', {}, 'secondHopSNR', {}, ...
+    'endToEndSNR', {}, 'eavesSNR', {}, 'worstEavesSNR', {}, 'secrecyRate', {});
 
 for idxUser = 1:numUsers
     user = scenario.legitimateUsers(idxUser);
@@ -82,17 +87,28 @@ for idxUser = 1:numUsers
         mainSNR = min(snrFirstHop, snrSecondHop);
 
         % Eavesdroppers listen to the relay transmission.
-        eavesSNR = 0;
-        for idxEve = 1:numel(scenario.eavesdroppers)
+        eavesSNRs = zeros(1, numEaves);
+        for idxEve = 1:numEaves
             eve = scenario.eavesdroppers(idxEve);
-            eavesSNR = max(eavesSNR, hopSNR(relay, eve, relayPower, noisePower, params));
+            eavesSNRs(idxEve) = hopSNR(relay, eve, relayPower, noisePower, params);
         end
+        eavesSNR = max(eavesSNRs);
 
         if mainSNR > bestMainSNR
             bestMainSNR = mainSNR;
             bestEavesSNR = eavesSNR;
             bestRelayName = relay.name;
         end
+
+        perHopResults(end+1) = struct( ...
+            'user', user.name, ...
+            'relay', relay.name, ...
+            'firstHopSNR', snrFirstHop, ...
+            'secondHopSNR', snrSecondHop, ...
+            'endToEndSNR', mainSNR, ...
+            'eavesSNR', eavesSNRs, ...
+            'worstEavesSNR', eavesSNR, ...
+            'secrecyRate', max(log2(1 + mainSNR) - log2(1 + eavesSNR), 0)); %#ok<AGROW>
     end
 
     secrecyRate = max(log2(1 + bestMainSNR) - log2(1 + bestEavesSNR), 0);
@@ -116,6 +132,44 @@ resultsTable = table(userNames, bestRelayNames, mainSNRdB', eavesSNRdB', secrecy
 
 disp('Updated scenario results (best relay per legitimate user):');
 disp(resultsTable);
+
+%% Detailed hop-by-hop report ---------------------------------------------
+numCombinations = numel(perHopResults);
+userColumn = strings(numCombinations, 1);
+relayColumn = strings(numCombinations, 1);
+firstHopColumn = zeros(numCombinations, 1);
+secondHopColumn = zeros(numCombinations, 1);
+endToEndColumn = zeros(numCombinations, 1);
+worstEavesColumn = zeros(numCombinations, 1);
+secrecyColumn = zeros(numCombinations, 1);
+eavesSummaryColumn = strings(numCombinations, 1);
+
+eavesNames = {scenario.eavesdroppers.name};
+
+for idx = 1:numCombinations
+    entry = perHopResults(idx);
+    userColumn(idx) = entry.user;
+    relayColumn(idx) = entry.relay;
+    firstHopColumn(idx) = linear2db(entry.firstHopSNR);
+    secondHopColumn(idx) = linear2db(entry.secondHopSNR);
+    endToEndColumn(idx) = linear2db(entry.endToEndSNR);
+    worstEavesColumn(idx) = linear2db(entry.worstEavesSNR);
+    secrecyColumn(idx) = entry.secrecyRate;
+
+    eavesEntries = strings(1, numEaves);
+    for idxEve = 1:numEaves
+        eavesEntries(idxEve) = sprintf('%s: %.2f dB', eavesNames{idxEve}, linear2db(entry.eavesSNR(idxEve)));
+    end
+    eavesSummaryColumn(idx) = strjoin(eavesEntries, '; ');
+end
+
+detailedTable = table(userColumn, relayColumn, firstHopColumn, secondHopColumn, ...
+    endToEndColumn, worstEavesColumn, secrecyColumn, eavesSummaryColumn, ...
+    'VariableNames', {'User', 'Relay', 'BaseToRelaySNR_dB', 'RelayToUserSNR_dB', ...
+    'EndToEndSNR_dB', 'StrongestEavesdropperSNR_dB', 'SecrecyRate_bpsHz', 'EavesdropperSNRs_dB'});
+
+disp('Detailed hop-by-hop decode-and-forward performance for every relay choice:');
+disp(detailedTable);
 
 %% Helper functions -------------------------------------------------------
 function snrValue = hopSNR(txNode, rxNode, transmitPower, noisePower, params)
